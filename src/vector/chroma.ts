@@ -1,4 +1,9 @@
-import { ChromaClient, Collection } from "chromadb";
+import {
+  ChromaClient,
+  Collection,
+  EmbeddingFunction,
+  registerEmbeddingFunction,
+} from "chromadb";
 import { EmbeddingProvider } from "../embeddings/provider.js";
 import {
   MemoryItem,
@@ -6,6 +11,36 @@ import {
   SearchResult,
   VectorStore,
 } from "./store.js";
+
+class ChromaEmbeddingFunction implements EmbeddingFunction {
+  public name = "consciousness-ef";
+
+  constructor(private provider?: EmbeddingProvider) {}
+
+  async generate(texts: string[]): Promise<number[][]> {
+    if (!this.provider) {
+      throw new Error(
+        "EmbeddingProvider not initialized for ChromaEmbeddingFunction",
+      );
+    }
+    return Promise.all(texts.map((text) => this.provider!.getEmbedding(text)));
+  }
+
+  getConfig() {
+    return {};
+  }
+
+  static buildFromConfig(): EmbeddingFunction {
+    return new ChromaEmbeddingFunction();
+  }
+}
+
+// Register it to avoid "No embedding function found" warnings
+try {
+  registerEmbeddingFunction("consciousness-ef", ChromaEmbeddingFunction as any);
+} catch (e) {
+  // Already registered or other error
+}
 
 export class ChromaVectorStore implements VectorStore {
   private collection: Collection | null = null;
@@ -17,9 +52,11 @@ export class ChromaVectorStore implements VectorStore {
   ) {}
 
   async initialize(): Promise<void> {
+    const ef = new ChromaEmbeddingFunction(this.embeddingProvider);
     this.collection = await this.client.getOrCreateCollection({
       name: this.collectionName,
       metadata: { "hnsw:space": "cosine" },
+      embeddingFunction: ef,
     });
   }
 
@@ -29,20 +66,18 @@ export class ChromaVectorStore implements VectorStore {
   ): Promise<MemoryItem> {
     if (!this.collection) await this.initialize();
 
-    const embedding = await this.embeddingProvider.getEmbedding(content);
     const id = Math.random().toString(36).substring(2, 11);
 
-    const params: any = {
+    await this.collection!.add({
       ids: [id],
-      embeddings: [embedding],
       documents: [content],
-    };
+      metadatas:
+        metadata && Object.keys(metadata).length > 0 ? [metadata] : undefined,
+    });
 
-    if (metadata && Object.keys(metadata).length > 0) {
-      params.metadatas = [metadata];
-    }
-
-    await this.collection!.add(params);
+    // We still need the embedding for the return value, so we'll fetch it from the collection or provider
+    // fetching from provider is faster than a second roundtrip to Chroma if it's local
+    const embedding = await this.embeddingProvider.getEmbedding(content);
 
     return {
       id,
@@ -58,10 +93,8 @@ export class ChromaVectorStore implements VectorStore {
   ): Promise<SearchResult[]> {
     if (!this.collection) await this.initialize();
 
-    const queryEmbedding = await this.embeddingProvider.getEmbedding(query);
-
     const results = await this.collection!.query({
-      queryEmbeddings: [queryEmbedding],
+      queryTexts: [query],
       nResults: options.limit || 5,
       // We manually cast because the library types can be restrictive
       include: ["documents", "metadatas", "embeddings", "distances"] as any,

@@ -11,7 +11,9 @@ export class HFEmbeddingProvider implements EmbeddingProvider {
 
   private async getExtractor() {
     if (!this.extractor) {
-      this.extractor = await pipeline("feature-extraction", this.modelName);
+      this.extractor = await pipeline("feature-extraction", this.modelName, {
+        dtype: "fp32",
+      });
     }
     return this.extractor;
   }
